@@ -1,3 +1,5 @@
+use crate::host::MultiDomain;
+
 use super::*;
 
 // use crate::service::S3Service;
@@ -127,4 +129,248 @@ fn extract_host_from_uri() {
     );
     let host = extract_host(&req).unwrap();
     assert_eq!(host, None);
+}
+
+
+#[test]
+fn vh_no_bucket_2_root() {
+    let domains = ["example.com:9000", "example.com:9001", "example.io", "example.com", "example.io:9000", "example.io:9001"];
+    let md = MultiDomain::new(domains.iter().copied()).unwrap();
+
+    let host = "example.com:9000";
+    let result = md.parse_host_header(host);
+    let vh = result.unwrap();
+    assert_eq!(vh.domain(), host);
+    assert_eq!(vh.bucket(), None);
+}
+
+/// Tests for virtual-hosted-style request parsing with fallback to path-style
+mod virtual_host_parsing_logic_tests {
+    use super::*;
+    use crate::host::MultiDomain;
+    use crate::path::{parse_path_style, parse_virtual_hosted_style, S3Path};
+
+    /// Test: bucket.example.com/object.txt
+    #[test]
+    fn test_vh_with_bucket_and_key() {
+        let domains = ["example.com:9000", "example.com:9001", "example.io", "example.com", "example.io:9000", "example.io:9001"];
+        let s3_host = MultiDomain::new(domains.iter().copied()).unwrap();
+        let host_header = "mybucket.example.com";
+        let uri_path = "/object.txt";
+
+        let vh = s3_host.parse_host_header(host_header).unwrap();
+        let vh_bucket = vh.bucket();
+        
+        assert_eq!(vh_bucket, Some("mybucket"));
+        
+        let result = parse_virtual_hosted_style(vh_bucket, uri_path).unwrap();
+        match result {
+            S3Path::Object { bucket, key } => {
+                assert_eq!(bucket.as_ref(), "mybucket");
+                assert_eq!(key.as_ref(), "object.txt");
+            }
+            _ => panic!("Expected S3Path::Object, got {:?}", result),
+        }
+    }
+
+    /// Test: bucket.example.com/ (bucket only, no key)
+    #[test]
+    fn test_vh_with_bucket_only() {
+        let domains = ["example.com:9000", "example.com:9001", "example.io", "example.com", "example.io:9000", "example.io:9001"];
+        let s3_host = MultiDomain::new(domains.iter().copied()).unwrap();
+        let host_header = "mybucket.example.com";
+        let uri_path = "/";
+
+        let vh = s3_host.parse_host_header(host_header).unwrap();
+        let vh_bucket = vh.bucket();
+        
+        assert_eq!(vh_bucket, Some("mybucket"));
+        
+        let result = parse_virtual_hosted_style(vh_bucket, uri_path).unwrap();
+        match result {
+            S3Path::Bucket { bucket } => {
+                assert_eq!(bucket.as_ref(), "mybucket");
+            }
+            _ => panic!("Expected S3Path::Bucket, got {:?}", result),
+        }
+    }
+
+    /// Test: example.com/mybucket/myfile.txt (fallback to path-style)
+    #[test]
+    fn test_vh_no_bucket_fallback_to_path_style_with_bucket_and_key() {
+        let domains = ["example.com:9000", "example.com:9001", "example.io", "example.com", "example.io:9000", "example.io:9001"];
+        let s3_host = MultiDomain::new(domains.iter().copied()).unwrap();
+        let host_header = "example.com";
+        let uri_path = "/mybucket/myfile.txt";
+
+        let vh = s3_host.parse_host_header(host_header).unwrap();
+        let vh_bucket = vh.bucket();
+        
+        assert_eq!(vh_bucket, None);
+        
+        let result = parse_path_style(uri_path).unwrap();
+        match result {
+            S3Path::Object { bucket, key } => {
+                assert_eq!(bucket.as_ref(), "mybucket");
+                assert_eq!(key.as_ref(), "myfile.txt");
+            }
+            _ => panic!("Expected S3Path::Object, got {:?}", result),
+        }
+    }
+
+    /// Test: example.com/mybucket/ (fallback to path-style, bucket only)
+    #[test]
+    fn test_vh_no_bucket_fallback_to_path_style_bucket_only() {
+        let domains = ["example.com:9000", "example.com:9001", "example.io", "example.com", "example.io:9000", "example.io:9001"];
+        let s3_host = MultiDomain::new(domains.iter().copied()).unwrap();
+        let host_header = "example.com";
+        let uri_path = "/mybucket/";
+
+        let vh = s3_host.parse_host_header(host_header).unwrap();
+        let vh_bucket = vh.bucket();
+        
+        assert_eq!(vh_bucket, None);
+        
+        let result = parse_path_style(uri_path).unwrap();
+        match result {
+            S3Path::Bucket { bucket } => {
+                assert_eq!(bucket.as_ref(), "mybucket");
+            }
+            _ => panic!("Expected S3Path::Bucket, got {:?}", result),
+        }
+    }
+
+    /// Test: example.com/ and example.com/favicon.ico (fallback to path-style)
+    #[test]
+    fn test_vh_no_bucket_fallback_to_path_style_root() {
+        let domains = ["example.com:9000", "example.com:9001", "example.io", "example.com", "example.io:9000", "example.io:9001"];
+        let s3_host = MultiDomain::new(domains.iter().copied()).unwrap();
+        let host_header = "example.com";
+
+        let vh = s3_host.parse_host_header(host_header).unwrap();
+        let vh_bucket = vh.bucket();
+        
+        assert_eq!(vh_bucket, None);
+        
+        let result = parse_path_style("/").unwrap();
+        match result {
+            S3Path::Root => {}
+            _ => panic!("Expected S3Path::Root, got {:?}", result),
+        }
+
+        let result_single = parse_path_style("/favicon.ico").unwrap();
+        match result_single {
+            S3Path::Bucket { bucket } => {
+                assert_eq!(bucket.as_ref(), "favicon.ico");
+            }
+            _ => panic!("Expected S3Path::Bucket for single segment, got {:?}", result_single),
+        }
+    }
+
+    /// Test: bucket.example.com:9000/object.txt (with port)
+    #[test]
+    fn test_vh_with_port_and_bucket() {
+        let domains = ["example.com:9000", "example.com:9001", "example.io", "example.com", "example.io:9000", "example.io:9001"];
+        let s3_host = MultiDomain::new(domains.iter().copied()).unwrap();
+        let host_header = "mybucket.example.com:9000";
+        let uri_path = "/object.txt";
+
+        let vh = s3_host.parse_host_header(host_header).unwrap();
+        let vh_bucket = vh.bucket();
+        
+        assert_eq!(vh_bucket, Some("mybucket"));
+        
+        let result = parse_virtual_hosted_style(vh_bucket, uri_path).unwrap();
+        match result {
+            S3Path::Object { bucket, key } => {
+                assert_eq!(bucket.as_ref(), "mybucket");
+                assert_eq!(key.as_ref(), "object.txt");
+            }
+            _ => panic!("Expected S3Path::Object, got {:?}", result),
+        }
+    }
+
+    /// Test: example.com:9000/mybucket/myfile.txt (with port, fallback to path-style)
+    #[test]
+    fn test_vh_with_port_no_bucket_fallback() {
+        let domains = ["example.com:9000", "example.com:9001", "example.io", "example.com", "example.io:9000", "example.io:9001"];
+        let s3_host = MultiDomain::new(domains.iter().copied()).unwrap();
+        let host_header = "example.com:9000";
+        let uri_path = "/mybucket/myfile.txt";
+
+        let vh = s3_host.parse_host_header(host_header).unwrap();
+        let vh_bucket = vh.bucket();
+        
+        assert_eq!(vh_bucket, None);
+        
+        let result = parse_path_style(uri_path).unwrap();
+        match result {
+            S3Path::Object { bucket, key } => {
+                assert_eq!(bucket.as_ref(), "mybucket");
+                assert_eq!(key.as_ref(), "myfile.txt");
+            }
+            _ => panic!("Expected S3Path::Object, got {:?}", result),
+        }
+    }
+
+    /// Test: path-style without virtual host configuration
+    #[test]
+    fn test_path_style_without_virtual_host() {
+        let uri_path = "/mybucket/myfile.txt";
+
+        let result = parse_path_style(uri_path).unwrap();
+        match result {
+            S3Path::Object { bucket, key } => {
+                assert_eq!(bucket.as_ref(), "mybucket");
+                assert_eq!(key.as_ref(), "myfile.txt");
+            }
+            _ => panic!("Expected S3Path::Object, got {:?}", result),
+        }
+    }
+
+    /// Test: bucket.example.io:9001/object.txt (different domain with port)
+    #[test]
+    fn test_vh_with_different_domain_and_port() {
+        let domains = ["example.com:9000", "example.com:9001", "example.io", "example.com", "example.io:9000", "example.io:9001"];
+        let s3_host = MultiDomain::new(domains.iter().copied()).unwrap();
+        let host_header = "mybucket.example.io:9001";
+        let uri_path = "/object.txt";
+
+        let vh = s3_host.parse_host_header(host_header).unwrap();
+        let vh_bucket = vh.bucket();
+        
+        assert_eq!(vh_bucket, Some("mybucket"));
+        
+        let result = parse_virtual_hosted_style(vh_bucket, uri_path).unwrap();
+        match result {
+            S3Path::Object { bucket, key } => {
+                assert_eq!(bucket.as_ref(), "mybucket");
+                assert_eq!(key.as_ref(), "object.txt");
+            }
+            _ => panic!("Expected S3Path::Object, got {:?}", result),
+        }
+    }
+
+    /// Test: example.io:9000/mybucket/file.txt (different domain with port, fallback)
+    #[test]
+    fn test_vh_different_domain_port_no_bucket_fallback() {
+        let domains = ["example.com:9000", "example.com:9001", "example.io", "example.com", "example.io:9000", "example.io:9001"];
+        let s3_host = MultiDomain::new(domains.iter().copied()).unwrap();
+        let host_header = "example.io:9000";
+        let uri_path = "/mybucket/myfile.txt";
+
+        let vh = s3_host.parse_host_header(host_header).unwrap();
+        let vh_bucket = vh.bucket();
+        
+        assert_eq!(vh_bucket, None);
+        
+        let result = parse_path_style(uri_path).unwrap();
+        match result {
+            S3Path::Object { bucket, key } => {
+                assert_eq!(bucket.as_ref(), "mybucket");
+                assert_eq!(key.as_ref(), "myfile.txt");
+            }
+            _ => panic!("Expected S3Path::Object, got {:?}", result),
+        }
+    }
 }

@@ -193,8 +193,7 @@ impl S3Host for MultiDomain {
         }
 
         if is_valid_domain(host) {
-            let bucket = host.to_ascii_lowercase();
-            return Ok(VirtualHost::with_bucket(host, bucket));
+            return Ok(VirtualHost::new(host));
         }
 
         Err(s3_error!(InvalidRequest, "Invalid host header"))

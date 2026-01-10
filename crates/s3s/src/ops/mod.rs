@@ -284,7 +284,7 @@ async fn prepare(req: &mut Request, ccx: &CallContext<'_>) -> S3Result<Prepare> 
 
         let host_header = extract_host(req)?;
         let vh;
-        let vh_bucket;
+        let mut vh_bucket= None;
         {
             let default_validation = &const { AwsNameValidation::new() };
             let validation = ccx.validation.unwrap_or(default_validation);
@@ -298,16 +298,19 @@ async fn prepare(req: &mut Request, ccx: &CallContext<'_>) -> S3Result<Prepare> 
                         debug!(?vh);
 
                         vh_bucket = vh.bucket();
-                        break 'parse crate::path::parse_virtual_hosted_style_with_validation(
-                            vh_bucket,
-                            &decoded_uri_path,
-                            validation,
-                        );
+                        if vh_bucket.is_some() {
+                            break 'parse crate::path::parse_virtual_hosted_style_with_validation(
+                                vh_bucket,
+                                &decoded_uri_path,
+                                validation,
+                            );
+                        }
+                        // vh_bucket is None, fallback to path-style parsing
+                        debug!("no bucket in virtual-hosted-style request, fallback to path-style");
                     }
                 }
 
                 debug!(?decoded_uri_path, "parsing path-style request");
-                vh_bucket = None;
                 crate::path::parse_path_style_with_validation(&decoded_uri_path, validation)
             };
 
