@@ -1,4 +1,3 @@
-use crate::host::MultiDomain;
 
 use super::*;
 
@@ -129,19 +128,6 @@ fn extract_host_from_uri() {
     );
     let host = extract_host(&req).unwrap();
     assert_eq!(host, None);
-}
-
-
-#[test]
-fn vh_no_bucket_2_root() {
-    let domains = ["example.com:9000", "example.com:9001", "example.io", "example.com", "example.io:9000", "example.io:9001"];
-    let md = MultiDomain::new(domains.iter().copied()).unwrap();
-
-    let host = "example.com:9000";
-    let result = md.parse_host_header(host);
-    let vh = result.unwrap();
-    assert_eq!(vh.domain(), host);
-    assert_eq!(vh.bucket(), None);
 }
 
 /// Tests for virtual-hosted-style request parsing with fallback to path-style
@@ -313,21 +299,6 @@ mod virtual_host_parsing_logic_tests {
         }
     }
 
-    /// Test: path-style without virtual host configuration
-    #[test]
-    fn test_path_style_without_virtual_host() {
-        let uri_path = "/mybucket/myfile.txt";
-
-        let result = parse_path_style(uri_path).unwrap();
-        match result {
-            S3Path::Object { bucket, key } => {
-                assert_eq!(bucket.as_ref(), "mybucket");
-                assert_eq!(key.as_ref(), "myfile.txt");
-            }
-            _ => panic!("Expected S3Path::Object, got {:?}", result),
-        }
-    }
-
     /// Test: bucket.example.io:9001/object.txt (different domain with port)
     #[test]
     fn test_vh_with_different_domain_and_port() {
@@ -373,4 +344,112 @@ mod virtual_host_parsing_logic_tests {
             _ => panic!("Expected S3Path::Object, got {:?}", result),
         }
     }
+
+    /// Test: example.com/health (health check endpoint, fallback to path-style)
+    #[test]
+    fn test_vh_health_endpoint() {
+        let domains = ["example.com:9000", "example.com:9001", "example.io", "example.com", "example.io:9000", "example.io:9001"];
+        let s3_host = MultiDomain::new(domains.iter().copied()).unwrap();
+        let host_header = "example.com";
+        let uri_path = "/health";
+
+        let vh = s3_host.parse_host_header(host_header).unwrap();
+        let vh_bucket = vh.bucket();
+        
+        assert_eq!(vh_bucket, None);
+        
+        let result = parse_path_style(uri_path).unwrap();
+        match result {
+            S3Path::Bucket { bucket } => {
+                assert_eq!(bucket.as_ref(), "health");
+            }
+            _ => panic!("Expected S3Path::Bucket, got {:?}", result),
+        }
+    }
+
+    /// Test: example.com:9001/rustfs/console/health (console endpoint with port)
+    #[test]
+    fn test_vh_console_health_endpoint_with_port() {
+        let domains = ["example.com:9000", "example.com:9001", "example.io", "example.com", "example.io:9000", "example.io:9001"];
+        let s3_host = MultiDomain::new(domains.iter().copied()).unwrap();
+        let host_header = "example.com:9001";
+        let uri_path = "/rustfs/console/health";
+
+        let vh = s3_host.parse_host_header(host_header).unwrap();
+        let vh_bucket = vh.bucket();
+        
+        assert_eq!(vh_bucket, None);
+        
+        let result = parse_path_style(uri_path).unwrap();
+        match result {
+            S3Path::Object { bucket, key } => {
+                assert_eq!(bucket.as_ref(), "rustfs");
+                assert_eq!(key.as_ref(), "console/health");
+            }
+            _ => panic!("Expected S3Path::Object, got {:?}", result),
+        }
+    }
+
+    /// Test: example.com:9000/rustfs/admin/v3/info (admin API endpoint)
+    #[test]
+    fn test_vh_admin_api_endpoint() {
+        let domains = ["example.com:9000", "example.com:9001", "example.io", "example.com", "example.io:9000", "example.io:9001"];
+        let s3_host = MultiDomain::new(domains.iter().copied()).unwrap();
+        let host_header = "example.com:9000";
+        let uri_path = "/rustfs/admin/v3/info";
+
+        let vh = s3_host.parse_host_header(host_header).unwrap();
+        let vh_bucket = vh.bucket();
+        
+        assert_eq!(vh_bucket, None);
+        
+        let result = parse_path_style(uri_path).unwrap();
+        match result {
+            S3Path::Object { bucket, key } => {
+                assert_eq!(bucket.as_ref(), "rustfs");
+                assert_eq!(key.as_ref(), "admin/v3/info");
+            }
+            _ => panic!("Expected S3Path::Object, got {:?}", result),
+        }
+    }
+
+    /// Test: example.io:9001/rustfs/admin/v3/status (different domain admin endpoint)
+    #[test]
+    fn test_vh_different_domain_admin_endpoint() {
+        let domains = ["example.com:9000", "example.com:9001", "example.io", "example.com", "example.io:9000", "example.io:9001"];
+        let s3_host = MultiDomain::new(domains.iter().copied()).unwrap();
+        let host_header = "example.io:9001";
+        let uri_path = "/rustfs/admin/v3/status";
+
+        let vh = s3_host.parse_host_header(host_header).unwrap();
+        let vh_bucket = vh.bucket();
+        
+        assert_eq!(vh_bucket, None);
+        
+        let result = parse_path_style(uri_path).unwrap();
+        match result {
+            S3Path::Object { bucket, key } => {
+                assert_eq!(bucket.as_ref(), "rustfs");
+                assert_eq!(key.as_ref(), "admin/v3/status");
+            }
+            _ => panic!("Expected S3Path::Object, got {:?}", result),
+        }
+    }
+
+    /// Test: path-style without virtual host configuration
+    #[test]
+    fn test_path_style_without_virtual_host() {
+        let uri_path = "/mybucket/myfile.txt";
+
+        let result = parse_path_style(uri_path).unwrap();
+        match result {
+            S3Path::Object { bucket, key } => {
+                assert_eq!(bucket.as_ref(), "mybucket");
+                assert_eq!(key.as_ref(), "myfile.txt");
+            }
+            _ => panic!("Expected S3Path::Object, got {:?}", result),
+        }
+    }
+
+    
 }
